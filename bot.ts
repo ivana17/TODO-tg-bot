@@ -20,6 +20,34 @@ interface SessionData {
 // Define context type with session
 type MyContext = Context & SessionFlavor<SessionData>;
 
+// Callback data constants
+const CALLBACK = {
+  LIST: 'list',
+  ADD: 'add',
+  COMPLETE: 'complete',
+  DELETE: 'delete',
+};
+
+// Keyboard constants
+const KEYBOARDS = {
+  START: new InlineKeyboard()
+    .text('📋 List', CALLBACK.LIST)
+    .text('➕ Add', CALLBACK.ADD),
+
+  TODO_ACTIONS: new InlineKeyboard()
+    .text('➕ Add', CALLBACK.ADD)
+    .text('✅ Complete', CALLBACK.COMPLETE)
+    .text('🗑️ Delete', CALLBACK.DELETE),
+
+  EMPTY_LIST: new InlineKeyboard().text('➕ Add Todo', CALLBACK.ADD),
+
+  BACK_TO_LIST: new InlineKeyboard().text('🔙 Back to List', CALLBACK.LIST),
+
+  VIEW_LIST: new InlineKeyboard().text('📋 View Todo List', CALLBACK.LIST),
+
+  OPEN_LIST: new InlineKeyboard().text('📋 Open Todo List', CALLBACK.LIST),
+};
+
 /* 
   Create a new bot
 */
@@ -42,110 +70,6 @@ const todos: Todo[] = [];
 // Keep track of the next todo ID
 let nextTodoId = 1;
 
-/*
-  Bot command handlers
-*/
-bot.command('list', async ctx => {
-  const userId = ctx.from?.id;
-  if (!userId) return;
-
-  const userTodos = todos.filter(todo => todo.userId === userId);
-
-  if (userTodos.length === 0) {
-    await ctx.reply('You have no todos yet! Use /add <text> to create one.');
-    return;
-  }
-
-  let message = '📋 *Your Todo List:*\n\n';
-  userTodos.forEach(todo => {
-    const status = todo.completed ? '✅' : '⬜️';
-    message += `${status} *${todo.id}*: ${todo.text}\n`;
-  });
-
-  message +=
-    '\nUse /add <text> to create a new todo, /toggle <id> to mark as complete/incomplete, or /delete <id> to remove a todo.';
-
-  await ctx.reply(message, { parse_mode: 'Markdown' });
-});
-
-bot.command('add', async ctx => {
-  const userId = ctx.from?.id;
-  if (!userId) return;
-
-  const text = ctx.message?.text?.replace('/add', '').trim();
-
-  if (!text) {
-    await ctx.reply(
-      'Please provide a task description. Example: /add Buy milk'
-    );
-    return;
-  }
-
-  const newTodo: Todo = {
-    id: nextTodoId++,
-    text,
-    completed: false,
-    userId,
-  };
-
-  todos.push(newTodo);
-
-  await ctx.reply(`✅ Added new todo: ${text}`);
-});
-
-bot.command('toggle', async ctx => {
-  const userId = ctx.from?.id;
-  if (!userId) return;
-
-  const idText = ctx.message?.text?.replace('/toggle', '').trim();
-  const id = parseInt(idText || '');
-
-  if (isNaN(id)) {
-    await ctx.reply('Please provide a valid todo ID. Example: /toggle 1');
-    return;
-  }
-
-  const todoIndex = todos.findIndex(
-    todo => todo.id === id && todo.userId === userId
-  );
-
-  if (todoIndex === -1) {
-    await ctx.reply(`❌ Todo with ID ${id} not found.`);
-    return;
-  }
-
-  todos[todoIndex].completed = !todos[todoIndex].completed;
-  const status = todos[todoIndex].completed ? 'completed' : 'marked as pending';
-
-  await ctx.reply(`✅ Todo ${id} ${status}.`);
-});
-
-bot.command('delete', async ctx => {
-  const userId = ctx.from?.id;
-  if (!userId) return;
-
-  const idText = ctx.message?.text?.replace('/delete', '').trim();
-  const id = parseInt(idText || '');
-
-  if (isNaN(id)) {
-    await ctx.reply('Please provide a valid todo ID. Example: /delete 1');
-    return;
-  }
-
-  const todoIndex = todos.findIndex(
-    todo => todo.id === id && todo.userId === userId
-  );
-
-  if (todoIndex === -1) {
-    await ctx.reply(`❌ Todo with ID ${id} not found.`);
-    return;
-  }
-
-  const deletedTodo = todos.splice(todoIndex, 1)[0];
-
-  await ctx.reply(`🗑️ Deleted todo: ${deletedTodo.text}`);
-});
-
 const startMessage =
   '🤖 *Welcome to Todo Bot\\!* 📝\n\n' +
   'I can help you manage your tasks efficiently\\.\n\n' +
@@ -156,14 +80,11 @@ const startMessage =
   '🗑️ Delete tasks\n\n' +
   "Let's get organized\\! Tap a button below to begin\\.";
 
-const startKeyboard = new InlineKeyboard()
-  .text('📋 List', 'list')
-  .text('➕ Add', 'add');
-
+// Handle the start command
 bot.command('start', async ctx => {
   await ctx.reply(startMessage, {
     parse_mode: 'MarkdownV2',
-    reply_markup: startKeyboard,
+    reply_markup: KEYBOARDS.START,
   });
 });
 
@@ -186,11 +107,10 @@ bot.callbackQuery('list', async ctx => {
     // Show empty state message with an add button
     const emptyMessage =
       '📋 *Your Todo List is Empty*\n\nYou have no todos yet. Add your first task!';
-    const keyboard = new InlineKeyboard().text('➕ Add Todo', 'add');
 
     await ctx.editMessageText(emptyMessage, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      reply_markup: KEYBOARDS.EMPTY_LIST,
     });
     return;
   }
@@ -201,15 +121,9 @@ bot.callbackQuery('list', async ctx => {
     message += `${status} *${todo.id}*: ${todo.text}\n`;
   });
 
-  // Create a single row of action buttons
-  const keyboard = new InlineKeyboard()
-    .text('➕ Add', 'add')
-    .text('✅ Complete', 'complete')
-    .text('🗑️ Delete', 'delete');
-
   await ctx.editMessageText(message, {
     parse_mode: 'Markdown',
-    reply_markup: keyboard,
+    reply_markup: KEYBOARDS.TODO_ACTIONS,
   });
 });
 
@@ -248,7 +162,7 @@ bot.callbackQuery('complete', async ctx => {
 
   await ctx.editMessageText(message, {
     parse_mode: 'Markdown',
-    reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+    reply_markup: KEYBOARDS.BACK_TO_LIST,
   });
 
   // Set state to "completing"
@@ -290,7 +204,7 @@ bot.callbackQuery('delete', async ctx => {
 
   await ctx.editMessageText(message, {
     parse_mode: 'Markdown',
-    reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+    reply_markup: KEYBOARDS.BACK_TO_LIST,
   });
 
   // Set state to "deleting"
@@ -309,7 +223,7 @@ bot.callbackQuery('add', async ctx => {
     'Please send me the task you want to add.\n\nJust type your todo text as a reply to this message.';
 
   await ctx.editMessageText(message, {
-    reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+    reply_markup: KEYBOARDS.BACK_TO_LIST,
   });
 
   // Set user state to "adding" - in a real app, you'd store this in a database
@@ -319,10 +233,6 @@ bot.callbackQuery('add', async ctx => {
 
 /* 
   Dispatcher for messages coming from the Bot API 
-  ctx - the context of the message
-  ctx.from - the user who sent the message
-  ctx.message - the message itself
-  ctx.message.chat - the chat
 */
 bot.on('message', async ctx => {
   //Print to console
@@ -354,7 +264,7 @@ bot.on('message', async ctx => {
 
         // Provide confirmation and button to view the list
         await ctx.reply(`✅ Added new todo: ${ctx.message.text}`, {
-          reply_markup: new InlineKeyboard().text('📋 View Todo List', 'list'),
+          reply_markup: KEYBOARDS.VIEW_LIST,
         });
         break;
 
@@ -364,7 +274,7 @@ bot.on('message', async ctx => {
 
         if (isNaN(completeId)) {
           await ctx.reply('❌ Please enter a valid number.', {
-            reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+            reply_markup: KEYBOARDS.BACK_TO_LIST,
           });
           break;
         }
@@ -375,7 +285,7 @@ bot.on('message', async ctx => {
 
         if (todoToCompleteIndex === -1) {
           await ctx.reply(`❌ Todo with ID ${completeId} not found.`, {
-            reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+            reply_markup: KEYBOARDS.BACK_TO_LIST,
           });
           break;
         }
@@ -391,7 +301,7 @@ bot.on('message', async ctx => {
         ctx.session.state = undefined;
 
         await ctx.reply(`✅ Todo ${completeId} ${status}.`, {
-          reply_markup: new InlineKeyboard().text('📋 View Todo List', 'list'),
+          reply_markup: KEYBOARDS.VIEW_LIST,
         });
         break;
 
@@ -401,7 +311,7 @@ bot.on('message', async ctx => {
 
         if (isNaN(deleteId)) {
           await ctx.reply('❌ Please enter a valid number.', {
-            reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+            reply_markup: KEYBOARDS.BACK_TO_LIST,
           });
           break;
         }
@@ -412,7 +322,7 @@ bot.on('message', async ctx => {
 
         if (todoToDeleteIndex === -1) {
           await ctx.reply(`❌ Todo with ID ${deleteId} not found.`, {
-            reply_markup: new InlineKeyboard().text('🔙 Back to List', 'list'),
+            reply_markup: KEYBOARDS.BACK_TO_LIST,
           });
           break;
         }
@@ -424,7 +334,7 @@ bot.on('message', async ctx => {
         ctx.session.state = undefined;
 
         await ctx.reply(`🗑️ Deleted todo: ${deletedTodo.text}`, {
-          reply_markup: new InlineKeyboard().text('📋 View Todo List', 'list'),
+          reply_markup: KEYBOARDS.VIEW_LIST,
         });
         break;
     }
@@ -444,7 +354,7 @@ bot.on('message', async ctx => {
       await ctx.reply(
         '✨ I now work with buttons instead of commands! ✨\n\nTap the button below to access your todo list.',
         {
-          reply_markup: new InlineKeyboard().text('📋 Open Todo List', 'list'),
+          reply_markup: KEYBOARDS.OPEN_LIST,
         }
       );
     } else {
@@ -452,7 +362,7 @@ bot.on('message', async ctx => {
       await ctx.reply(
         'To manage your todos, please use the buttons provided. Tap below to get started:',
         {
-          reply_markup: new InlineKeyboard().text('📋 Open Todo List', 'list'),
+          reply_markup: KEYBOARDS.OPEN_LIST,
         }
       );
     }
