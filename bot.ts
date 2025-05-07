@@ -1,15 +1,25 @@
 import { Bot, InlineKeyboard, Context, SessionFlavor } from 'grammy';
 import * as dotenv from 'dotenv';
 import { session } from 'grammy';
+import * as sheetsService from './src/services/sheets';
+import * as fs from 'fs';
+import * as path from 'path';
 
 dotenv.config();
 
-// Define Todo interface
-interface Todo {
-  id: number;
-  text: string;
-  completed: boolean;
-  userId: number; // To support multiple users
+// Read service account email from credentials file if available
+try {
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    const credentialsFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const credentialsContent = fs.readFileSync(credentialsFile, 'utf8');
+    const credentials = JSON.parse(credentialsContent);
+    if (credentials.client_email) {
+      process.env.SERVICE_ACCOUNT_EMAIL = credentials.client_email;
+      console.log(`Service account email: ${credentials.client_email}`);
+    }
+  }
+} catch (error) {
+  console.error('Error reading service account email:', error);
 }
 
 // Define session interface
@@ -65,10 +75,21 @@ bot.use(
   })
 );
 
-// Store todos
-const todos: Todo[] = [];
-// Keep track of the next todo ID
-let nextTodoId = 1;
+// Initialize the Google Sheet
+(async () => {
+  try {
+    await sheetsService.initializeSheet();
+    console.log('Google Sheets integration initialized successfully');
+
+    // Start the bot only after successful initialization
+    bot.start();
+    console.log('Bot started successfully');
+  } catch (error) {
+    // The sheets service already logged detailed error information
+    console.error('Failed to initialize application. Exiting...');
+    process.exit(1);
+  }
+})();
 
 const startMessage =
   '🤖 *Welcome to Todo Bot\\!* 📝\n\n' +
@@ -101,7 +122,8 @@ bot.callbackQuery('list', async ctx => {
     ctx.session.state = undefined;
   }
 
-  const userTodos = todos.filter(todo => todo.userId === userId);
+  // Get todos from Google Sheets
+  const userTodos = await sheetsService.getUserTodos(userId);
 
   if (userTodos.length === 0) {
     // Show empty state message with an add button
@@ -135,7 +157,9 @@ bot.callbackQuery('complete', async ctx => {
   // Always answer the callback query immediately
   await ctx.answerCallbackQuery();
 
-  const userTodos = todos.filter(todo => todo.userId === userId);
+  // Get todos from Google Sheets
+  const userTodos = await sheetsService.getUserTodos(userId);
+
   if (userTodos.length === 0) {
     await ctx.answerCallbackQuery('You have no todos to complete!');
     ctx.callbackQuery.data = 'list';
@@ -177,7 +201,9 @@ bot.callbackQuery('delete', async ctx => {
   // Always answer the callback query immediately
   await ctx.answerCallbackQuery();
 
-  const userTodos = todos.filter(todo => todo.userId === userId);
+  // Get todos from Google Sheets
+  const userTodos = await sheetsService.getUserTodos(userId);
+
   if (userTodos.length === 0) {
     await ctx.answerCallbackQuery('You have no todos to delete!');
     ctx.callbackQuery.data = 'list';
@@ -226,8 +252,7 @@ bot.callbackQuery('add', async ctx => {
     reply_markup: KEYBOARDS.BACK_TO_LIST,
   });
 
-  // Set user state to "adding" - in a real app, you'd store this in a database
-  // For simplicity, we'll use the in-memory approach, but this won't persist across bot restarts
+  // Set user state to "adding"
   ctx.session = { state: 'adding' };
 });
 
@@ -250,92 +275,138 @@ bot.on('message', async ctx => {
     switch (ctx.session.state) {
       case 'adding':
         // Process adding a new todo
-        const newTodo: Todo = {
-          id: nextTodoId++,
-          text: ctx.message.text,
-          completed: false,
-          userId,
-        };
+        try {
+          const nextId = await sheetsService.getNextId();
+          const newTodo: sheetsService.Todo = {
+            id: nextId,
+            text: ctx.message.text,
+            completed: false,
+            userId,
+          };
 
-        todos.push(newTodo);
+          await sheetsService.addTodo(newTodo);
 
-        // Reset the user's state
-        ctx.session.state = undefined;
+          // Reset the user's state
+          ctx.session.state = undefined;
 
-        // Provide confirmation and button to view the list
-        await ctx.reply(`✅ Added new todo: ${ctx.message.text}`, {
-          reply_markup: KEYBOARDS.VIEW_LIST,
-        });
+          // Provide confirmation and button to view the list
+          await ctx.reply(`✅ Added new todo: ${ctx.message.text}`, {
+            reply_markup: KEYBOARDS.VIEW_LIST,
+          });
+        } catch (error) {
+          console.error('Error adding todo:', error);
+          await ctx.reply(
+            '❌ Sorry, there was an error adding your todo. Please try again.',
+            {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            }
+          );
+        }
         break;
 
       case 'completing':
         // Process completing/uncompleting a todo
-        const completeId = parseInt(ctx.message.text.trim());
+        try {
+          const completeId = parseInt(ctx.message.text.trim());
 
-        if (isNaN(completeId)) {
-          await ctx.reply('❌ Please enter a valid number.', {
-            reply_markup: KEYBOARDS.BACK_TO_LIST,
+          if (isNaN(completeId)) {
+            await ctx.reply('❌ Please enter a valid number.', {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          // Get the current todos to check status
+          const userTodos = await sheetsService.getUserTodos(userId);
+          const todoToComplete = userTodos.find(t => t.id === completeId);
+
+          if (!todoToComplete) {
+            await ctx.reply(`❌ Todo with ID ${completeId} not found.`, {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          // Toggle completion status
+          const newStatus = !todoToComplete.completed;
+          const success = await sheetsService.updateTodoStatus(
+            completeId,
+            userId,
+            newStatus
+          );
+
+          if (!success) {
+            await ctx.reply(`❌ Failed to update todo ${completeId}.`, {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          // Reset state
+          ctx.session.state = undefined;
+
+          const status = newStatus ? 'completed' : 'marked as pending';
+          await ctx.reply(`✅ Todo ${completeId} ${status}.`, {
+            reply_markup: KEYBOARDS.VIEW_LIST,
           });
-          break;
+        } catch (error) {
+          console.error('Error completing todo:', error);
+          await ctx.reply(
+            '❌ Sorry, there was an error updating your todo. Please try again.',
+            {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            }
+          );
         }
-
-        const todoToCompleteIndex = todos.findIndex(
-          todo => todo.id === completeId && todo.userId === userId
-        );
-
-        if (todoToCompleteIndex === -1) {
-          await ctx.reply(`❌ Todo with ID ${completeId} not found.`, {
-            reply_markup: KEYBOARDS.BACK_TO_LIST,
-          });
-          break;
-        }
-
-        // Toggle completion status
-        todos[todoToCompleteIndex].completed =
-          !todos[todoToCompleteIndex].completed;
-        const status = todos[todoToCompleteIndex].completed
-          ? 'completed'
-          : 'marked as pending';
-
-        // Reset state
-        ctx.session.state = undefined;
-
-        await ctx.reply(`✅ Todo ${completeId} ${status}.`, {
-          reply_markup: KEYBOARDS.VIEW_LIST,
-        });
         break;
 
       case 'deleting':
         // Process deleting a todo
-        const deleteId = parseInt(ctx.message.text.trim());
+        try {
+          const deleteId = parseInt(ctx.message.text.trim());
 
-        if (isNaN(deleteId)) {
-          await ctx.reply('❌ Please enter a valid number.', {
-            reply_markup: KEYBOARDS.BACK_TO_LIST,
+          if (isNaN(deleteId)) {
+            await ctx.reply('❌ Please enter a valid number.', {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          // Get the current todos to check if it exists
+          const userTodos = await sheetsService.getUserTodos(userId);
+          const todoToDelete = userTodos.find(t => t.id === deleteId);
+
+          if (!todoToDelete) {
+            await ctx.reply(`❌ Todo with ID ${deleteId} not found.`, {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          const success = await sheetsService.deleteTodo(deleteId, userId);
+
+          if (!success) {
+            await ctx.reply(`❌ Failed to delete todo ${deleteId}.`, {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            });
+            break;
+          }
+
+          // Reset state
+          ctx.session.state = undefined;
+
+          await ctx.reply(`🗑️ Deleted todo: ${todoToDelete.text}`, {
+            reply_markup: KEYBOARDS.VIEW_LIST,
           });
-          break;
+        } catch (error) {
+          console.error('Error deleting todo:', error);
+          await ctx.reply(
+            '❌ Sorry, there was an error deleting your todo. Please try again.',
+            {
+              reply_markup: KEYBOARDS.BACK_TO_LIST,
+            }
+          );
         }
-
-        const todoToDeleteIndex = todos.findIndex(
-          todo => todo.id === deleteId && todo.userId === userId
-        );
-
-        if (todoToDeleteIndex === -1) {
-          await ctx.reply(`❌ Todo with ID ${deleteId} not found.`, {
-            reply_markup: KEYBOARDS.BACK_TO_LIST,
-          });
-          break;
-        }
-
-        // Delete the todo
-        const deletedTodo = todos.splice(todoToDeleteIndex, 1)[0];
-
-        // Reset state
-        ctx.session.state = undefined;
-
-        await ctx.reply(`🗑️ Deleted todo: ${deletedTodo.text}`, {
-          reply_markup: KEYBOARDS.VIEW_LIST,
-        });
         break;
     }
 
@@ -368,9 +439,6 @@ bot.on('message', async ctx => {
     }
   }
 });
-
-//Start the Bot
-bot.start();
 
 // Add error handler
 bot.catch(err => {
